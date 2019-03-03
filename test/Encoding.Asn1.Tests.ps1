@@ -101,6 +101,15 @@ describe 'X.690 Example Encoding of a Prefixed Type Value [8.14]' {
     }
 }
 
+describe 'X.690 Encoding of a Object Identifier Value [8.19]' {
+
+    $asn1Data = binHex '06092A864886F70D010101'
+    $asn1Type = [Asn1Type]::ReadTag($asn1Data)
+
+    it 'should have tag name of ObjectIdentifier' { $asn1Type.GetTagName() | should be 'ObjectIdentifier' }
+    it 'shoudl have value of ''1.2.840.113549.1.1.1''' { $asn1Type.GetEncodedObjectIdentifier() | should be '1.2.840.113549.1.1.1' }
+}
+
 describe 'X.690 Example Record Structure [A.3]' {
     
     $asn1Data = [IO.MemoryStream]::new([Convert]::FromBase64String('YIGFYRAaBEpvaG4aAVAaBVNtaXRooAoaCERpcmVjdG9yQgEzoQpDCDE5NzEwOTE3ohJhEBoETWFyeRoBVBoFU21pdGijQjEfYREaBVJhbHBoGgFUGgVTbWl0aKAKQwgxOTU3MTExMTEfYREaBVN1c2FuGgFCGgVKb25lc6AKQwgxOTU5MDcxNw=='))

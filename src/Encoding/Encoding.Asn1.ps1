@@ -1,5 +1,10 @@
 #Requires -Version 5.0
 
+using namespace System.Collections.Generic
+using namespace System.IO
+using namespace System.Numerics
+using namespace System.Text
+
 enum Asn1Class
 {
     Universal = 0x00
@@ -70,7 +75,32 @@ class Asn1Type
         return $encoding
     }
 
-    [void] hidden ParseIdentifierOctets([IO.Stream]$Stream)
+    [string] GetEncodedObjectIdentifier()
+    {
+        $byte = [byte]$this.Value[0]
+        $sb = New-Object StringBuilder
+        [void]$sb.AppendFormat('{0}.{1}', [int]($byte / 40), [int]($byte % 40))
+
+        $subid = New-Object BigInteger 0
+        for ($i = 1; $i -lt $this.Value.Length; ++$i)
+        {
+            $byte = $this.Value[$i]
+            if (($byte -band 0x80) -eq 0x80)
+            {
+                $subid = ($subid -shl 7) + ($byte -band 0x7F)
+            }
+            else
+            {
+                $subid = ($subid -shl 7) + $byte
+                [void]$sb.AppendFormat('.{0}', $subid.ToString())
+                $subid = New-Object BigInteger 0
+            }
+        }
+
+        return $sb.ToString()
+    }
+
+    [void] hidden ParseIdentifierOctets([Stream]$Stream)
     {
         $this.Offset = $Stream.Position
         $firstByte = [byte]$Stream.ReadByte()
@@ -103,7 +133,7 @@ class Asn1Type
         $this.Number = $tagNumber
     }
 
-    [void] hidden ParseLengthOctets([IO.Stream]$Stream)
+    [void] hidden ParseLengthOctets([Stream]$Stream)
     {
         $tagLength = [long]0
         $firstByte = [byte]$Stream.ReadByte()
@@ -123,11 +153,11 @@ class Asn1Type
         $this.Length = $tagLength
     }
 
-    [void] hidden ParseContentOctets([IO.Stream]$Stream)
+    [void] hidden ParseContentOctets([Stream]$Stream)
     {
         if ($this.IsConstructed)
         {
-            $contentList = [Collections.Generic.LinkedList[Asn1Type]]::new()
+            $contentList = [LinkedList[Asn1Type]]::new()
             $remainingLength = if ($this.Length -ne -1) { $Stream.Position + $this.Length } else { $Stream.Length }
             while ($Stream.Position -lt $remainingLength)
             {
@@ -151,11 +181,11 @@ class Asn1Type
 
     [Asn1Type] static ReadTag([byte[]]$Buffer)
     {
-        $stream = [IO.MemoryStream]::new($Buffer)
+        $stream = [MemoryStream]::new($Buffer)
         return [Asn1Type]::ReadTagFromStream($stream)
     }
 
-    [Asn1Type] static ReadTagFromStream([IO.Stream]$Stream)
+    [Asn1Type] static ReadTagFromStream([Stream]$Stream)
     {
         $asn1Type = New-Object Asn1Type
         $asn1Type.ParseIdentifierOctets($Stream)
@@ -170,7 +200,7 @@ class Asn1Type
         return $this.GetTagName()
     }
 
-    [void] hidden BuildDebugOutput([Text.StringBuilder]$StringBuilder, [int]$Depth)
+    [void] hidden BuildDebugOutput([StringBuilder]$StringBuilder, [int]$Depth)
     {
         if ($Depth -ne 0) { [void]$StringBuilder.Append([Environment]::NewLine) }
         [void]$StringBuilder.Append([char]' ', $Depth * 2)
