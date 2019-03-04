@@ -75,31 +75,6 @@ class Asn1Type
         return $encoding
     }
 
-    [string] GetEncodedObjectIdentifier()
-    {
-        $byte = [byte]$this.Value[0]
-        $sb = New-Object StringBuilder
-        [void]$sb.AppendFormat('{0}.{1}', [int]($byte / 40), [int]($byte % 40))
-
-        $subid = New-Object BigInteger 0
-        for ($i = 1; $i -lt $this.Value.Length; ++$i)
-        {
-            $byte = $this.Value[$i]
-            if (($byte -band 0x80) -eq 0x80)
-            {
-                $subid = ($subid -shl 7) + ($byte -band 0x7F)
-            }
-            else
-            {
-                $subid = ($subid -shl 7) + $byte
-                [void]$sb.AppendFormat('.{0}', $subid.ToString())
-                $subid = New-Object BigInteger 0
-            }
-        }
-
-        return $sb.ToString()
-    }
-
     [void] hidden ParseIdentifierOctets([Stream]$Stream)
     {
         $this.Offset = $Stream.Position
@@ -195,11 +170,6 @@ class Asn1Type
         return $asn1Type
     }
 
-    [string] ToString()
-    {
-        return $this.GetTagName()
-    }
-
     [void] hidden BuildDebugOutput([StringBuilder]$StringBuilder, [int]$Depth)
     {
         if ($Depth -ne 0) { [void]$StringBuilder.Append([Environment]::NewLine) }
@@ -214,15 +184,134 @@ class Asn1Type
             else
             {
                 [void]$StringBuilder.Append(': ')
-                $this.Value | ForEach-Object { [void]$StringBuilder.Append($_.ToString('X2')) }
+                $out = [string]::Empty
+                $printRawValue = $true
+
+                if ($this.Class -eq 0x00)
+                {
+                    $printRawValue = $false
+                    if ($this.Number -eq [Asn1UniversalType]::Boolean) { $out = if ($this.ToBoolean()) {'True'} else {'False'} }
+                    elseif ($this.Number -eq [Asn1UniversalType]::ObjectIdentifier) { $out = $this.ToObjectIdentifier() }
+                    elseif ($this.Number -eq [Asn1UniversalType]::PrintableString) { $out = $this.ToASCIIString() }
+                    elseif ($this.Number -eq [Asn1UniversalType]::UTCTime) { $out = $this.ToDateTime($true).ToString('o') }
+                    elseif ($this.Number -eq [Asn1UniversalType]::GeneralizedTime) { $out = $this.ToDateTime($false).ToString('o') }
+                    elseif ($this.Number -eq [Asn1UniversalType]::UTF8String) { $out = $this.ToUTF8String() }
+                    elseif ($this.Number -eq [Asn1UniversalType]::OctetString)
+                    {
+                        $innerStream = [MemoryStream]$this.Value
+                        try
+                        {
+                            $innerTag = [Asn1Type]::ReadTagFromStream($innerStream)
+                            if ($innerStream.Position -eq $innerStream.Length)
+                            {
+                                [void]$StringBuilder.Append('(enc)')
+                                $innerTag.BuildDebugOutput($StringBuilder, $Depth + 1)
+                            }
+                        }
+                        catch { $printRawValue = $true }
+                    }
+                    else { $printRawValue = $true }
+                }
+                if ($printRawValue)
+                {
+                    $this.Value | ForEach-Object { [void]$StringBuilder.Append($_.ToString('X2')) }
+                }
+                else
+                {
+                    [void]$StringBuilder.Append($out)
+                }
             }
         }
+    }
+
+    [string] ToString()
+    {
+        return $this.GetTagName()
     }
 
     [string] ToDebugString()
     {
         $sb = New-Object Text.StringBuilder
         $this.BuildDebugOutput($sb, 0)
+        return $sb.ToString()
+    }
+
+    [bool] hidden ToBoolean()
+    {
+        return ([byte]$this.Value[0] -ne 0x00)
+    }
+
+    [string] hidden ToASCIIString()
+    {
+        return ([Encoding]::ASCII.GetString($this.Value))
+    }
+
+    [string] hidden ToUTF8String()
+    {
+        return ([Encoding]::UTF8.GetString($this.Value))
+    }
+
+    [DateTime] hidden ToDateTime([bool]$isUTCTime)
+    {
+        $isoTime = [Encoding]::ASCII.GetString($this.Value)
+        if (!$isoTime.EndsWith([char]'Z')) { throw 'Encoded times must be terminated with Z' }
+
+        $returnTime = $null
+        if ($isUTCTime)
+        {
+            $year = [int]::Parse($isoTime.Substring(0, 2))
+            if ($year -gt 49) { $year += 1900 } else { $year += 2000 }
+            $month = [int]::Parse($isoTime.Substring(2, 2))
+            $day = [int]::Parse($isoTime.Substring(4, 2))
+            $hour = [int]::Parse($isoTime.Substring(6, 2))
+            $minute = [int]::Parse($isoTime.Substring(8, 2))
+            $second = [int]::Parse($isoTime.Substring(10, 2))
+
+            $returnTime = [DateTime]::new($year, $month, $day, $hour, $minute, $second, [DateTimeKind]::Utc)
+        }
+        else
+        {
+            $year = [int]::Parse($isoTime.Substring(0, 4))
+            $month = [int]::Parse($isoTime.Substring(4, 2))
+            $day = [int]::Parse($isoTime.Substring(6, 2))
+            $hour = [int]::Parse($isoTime.Substring(8, 2))
+            $minute = [int]::Parse($isoTime.Substring(10, 2))
+            $second = [int]::Parse($isoTime.Substring(12, 2))
+            $millisecond = 0
+
+            if ($isoTime.Length -gt 15)
+            {
+                $remainder = [double]::Parse('0.'+$isoTime.Substring(14, $isoTime.Length - 15).TrimStart([char]'.'))
+                $millisecond = [int][Math]::Floor($remainder * 1000)
+            }
+
+            $returnTime = [DateTime]::new($year, $month, $day, $hour, $minute, $second, $millisecond, [DateTimeKind]::Utc)
+        }
+        return $returnTime
+    }
+
+    [string] hidden ToObjectIdentifier()
+    {
+        $byte = [byte]$this.Value[0]
+        $sb = New-Object StringBuilder
+        [void]$sb.AppendFormat('{0}.{1}', [int]($byte / 40), [int]($byte % 40))
+
+        $subid = New-Object BigInteger 0
+        for ($i = 1; $i -lt $this.Value.Length; ++$i)
+        {
+            $byte = $this.Value[$i]
+            if (($byte -band 0x80) -eq 0x80)
+            {
+                $subid = ($subid -shl 7) + ($byte -band 0x7F)
+            }
+            else
+            {
+                $subid = ($subid -shl 7) + $byte
+                [void]$sb.AppendFormat('.{0}', $subid.ToString())
+                $subid = New-Object BigInteger 0
+            }
+        }
+
         return $sb.ToString()
     }
 }
