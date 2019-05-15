@@ -1,5 +1,6 @@
 #Requires -Version 5.0
 
+using namespace System.Collections
 using namespace System.Collections.Generic
 using namespace System.IO
 using namespace System.Numerics
@@ -49,7 +50,7 @@ class Asn1Type
     [bool]$IsConstructed = $false
     [long]$Offset = 0
     [long]$Length = 0
-    [object]$Value = $null
+    [object]$RawValue = $null
 
     [string] GetTagName()
     {
@@ -139,17 +140,17 @@ class Asn1Type
                 $nextTag = [Asn1Type]::ReadTagFromStream($Stream)
                 if ($nextTag) { $contentList.Add($nextTag) } else { break }
             }
-            $this.Value = $contentList
+            $this.RawValue = $contentList
         }
         else
         {
             if ($this.Length -gt 0)
             {
-                $buffer = [Array]::CreateInstance([byte], $this.Length)
+                $buffer = [byte[]]::new($this.Length)
                 $bytesRead = $Stream.Read($buffer, 0, $this.Length)
     
                 if ($bytesRead -lt $buffer.Length) { throw 'Unable to read enough octets for the specified tag length' }
-                $this.Value = $buffer
+                $this.RawValue = $buffer
             }
         }
     }
@@ -175,11 +176,11 @@ class Asn1Type
         if ($Depth -ne 0) { [void]$StringBuilder.Append([Environment]::NewLine) }
         [void]$StringBuilder.Append([char]' ', $Depth * 2)
         [void]$StringBuilder.Append($this.GetTagName())
-        if ($this.Value)
+        if ($this.RawValue)
         {
             if ($this.IsConstructed)
             {
-                foreach ($node in $this.Value) { $node.BuildDebugOutput($StringBuilder, $Depth + 1) }
+                foreach ($node in $this.RawValue) { $node.BuildDebugOutput($StringBuilder, $Depth + 1) }
             }
             else
             {
@@ -191,14 +192,16 @@ class Asn1Type
                 {
                     $printRawValue = $false
                     if ($this.Number -eq [Asn1UniversalType]::Boolean) { $out = if ($this.ToBoolean()) {'True'} else {'False'} }
+                    elseif ($this.Number -eq [Asn1UniversalType]::Integer) { $out = $this.ToInteger().ToString() }
                     elseif ($this.Number -eq [Asn1UniversalType]::ObjectIdentifier) { $out = $this.ToObjectIdentifier() }
                     elseif ($this.Number -eq [Asn1UniversalType]::PrintableString) { $out = $this.ToASCIIString() }
+                    elseif ($this.Number -eq [Asn1UniversalType]::GeneralString) { $out = $this.ToASCIIString() }
                     elseif ($this.Number -eq [Asn1UniversalType]::UTCTime) { $out = $this.ToDateTime($true).ToString('o') }
                     elseif ($this.Number -eq [Asn1UniversalType]::GeneralizedTime) { $out = $this.ToDateTime($false).ToString('o') }
                     elseif ($this.Number -eq [Asn1UniversalType]::UTF8String) { $out = $this.ToUTF8String() }
                     elseif ($this.Number -eq [Asn1UniversalType]::OctetString)
                     {
-                        $innerStream = [MemoryStream]$this.Value
+                        $innerStream = [MemoryStream]$this.RawValue
                         try
                         {
                             $innerTag = [Asn1Type]::ReadTagFromStream($innerStream)
@@ -214,7 +217,7 @@ class Asn1Type
                 }
                 if ($printRawValue)
                 {
-                    $this.Value | ForEach-Object { [void]$StringBuilder.Append($_.ToString('X2')) }
+                    $this.RawValue | ForEach-Object { [void]$StringBuilder.Append($_.ToString('X2')) }
                 }
                 else
                 {
@@ -238,22 +241,37 @@ class Asn1Type
 
     [bool] hidden ToBoolean()
     {
-        return ([byte]$this.Value[0] -ne 0x00)
+        return ([byte]$this.RawValue[0] -ne 0x00)
+    }
+
+    [BigInteger] hidden ToInteger()
+    {
+        if ([BitConverter]::IsLittleEndian)
+        {
+            $reverseData = [byte[]]::new($this.Length)
+            [Buffer]::BlockCopy($this.RawValue, 0, $reverseData, 0, $reverseData.Length)
+            [Array]::Reverse($reverseData)
+            return [BigInteger]::new($reverseData)
+        }
+        else
+        {
+            return [BigInteger]::new($this.RawValue)
+        }
     }
 
     [string] hidden ToASCIIString()
     {
-        return ([Encoding]::ASCII.GetString($this.Value))
+        return ([Encoding]::ASCII.GetString($this.RawValue))
     }
 
     [string] hidden ToUTF8String()
     {
-        return ([Encoding]::UTF8.GetString($this.Value))
+        return ([Encoding]::UTF8.GetString($this.RawValue))
     }
 
     [DateTime] hidden ToDateTime([bool]$isUTCTime)
     {
-        $isoTime = [Encoding]::ASCII.GetString($this.Value)
+        $isoTime = [Encoding]::ASCII.GetString($this.RawValue)
         if (!$isoTime.EndsWith([char]'Z')) { throw 'Encoded times must be terminated with Z' }
 
         $returnTime = $null
@@ -292,14 +310,14 @@ class Asn1Type
 
     [string] hidden ToObjectIdentifier()
     {
-        $byte = [byte]$this.Value[0]
+        $byte = [byte]$this.RawValue[0]
         $sb = New-Object StringBuilder
         [void]$sb.AppendFormat('{0}.{1}', [int]($byte / 40), [int]($byte % 40))
 
         $subid = New-Object BigInteger 0
-        for ($i = 1; $i -lt $this.Value.Length; ++$i)
+        for ($i = 1; $i -lt $this.RawValue.Length; ++$i)
         {
-            $byte = $this.Value[$i]
+            $byte = $this.RawValue[$i]
             if (($byte -band 0x80) -eq 0x80)
             {
                 $subid = ($subid -shl 7) + ($byte -band 0x7F)
